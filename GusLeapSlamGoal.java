@@ -29,7 +29,8 @@ public class GusLeapSlamGoal extends Goal {
     @Override
     public boolean canUse() {
         LivingEntity target = this.gus.getTarget();
-        if (target == null || !target.isAlive() || !this.gus.onGround() || this.gus.tickCount < this.nextUseTick) {
+        if (this.gus.isTransitioning() || target == null || !target.isAlive() || !this.gus.onGround()
+                || this.gus.tickCount < this.nextUseTick) {
             return false;
         }
         if (target instanceof Player player && (player.isSpectator() || player.isCreative())) {
@@ -49,7 +50,7 @@ public class GusLeapSlamGoal extends Goal {
 
     @Override
     public boolean canContinueToUse() {
-        return this.phase != Phase.DONE;
+        return this.phase != Phase.DONE && !this.gus.isTransitioning();
     }
 
     @Override
@@ -75,7 +76,7 @@ public class GusLeapSlamGoal extends Goal {
     public void stop() {
         this.phase = Phase.DONE;
         this.gus.setLeapState(GusEntity.LEAP_NONE);
-        this.nextUseTick = this.gus.tickCount + GusStats.LEAP_COOLDOWN_TICKS;
+        this.nextUseTick = this.gus.tickCount + this.gus.getLeapCooldownTicks();
     }
 
     @Override

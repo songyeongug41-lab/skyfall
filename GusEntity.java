@@ -4,8 +4,10 @@ import com.example.gusboss.GusStats;
 import com.example.gusboss.entity.ai.GusLeapSlamGoal;
 import com.example.gusboss.entity.ai.GusMeleeGoal;
 import java.util.List;
+import java.util.UUID;
 import javax.annotation.Nullable;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.particles.BlockParticleOption;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.nbt.CompoundTag;
@@ -19,10 +21,15 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
+import net.minecraft.tags.DamageTypeTags;
+import net.minecraft.util.Mth;
 import net.minecraft.world.BossEvent;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.MobSpawnType;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
+import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.ai.goal.FloatGoal;
@@ -31,19 +38,34 @@ import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
 import net.minecraft.world.entity.ai.goal.WaterAvoidingRandomStrollGoal;
 import net.minecraft.world.entity.ai.goal.target.HurtByTargetGoal;
 import net.minecraft.world.entity.ai.goal.target.NearestAttackableTargetGoal;
+import net.minecraft.world.entity.ai.memory.MemoryModuleType;
 import net.minecraft.world.entity.monster.Monster;
+import net.minecraft.world.entity.monster.piglin.Piglin;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
-/** Gus, The Iron Golem - body, stats, punch combo (attack 1), leap + ground slam (attack 2), combat regen, boss bar. */
+/**
+ * Gus, The Iron Golem.
+ * Attack 1: punch combo. Attack 2: leap + ground slam. Phase 2: one-time transition at low health.
+ */
 public class GusEntity extends Monster {
     public static final int LEAP_NONE = 0;
     public static final int LEAP_WINDUP = 1;
     public static final int LEAP_AIR = 2;
     public static final int LEAP_SLAM = 3;
+
+    // transition timeline (ticks since the transition began)
+    private static final int T_ROAR = 25;
+    private static final int T_HEAL_START = 30;
+    private static final int T_SWITCH = 40;       // phase flips to 2, buffs apply, piglins arrive
+    private static final int T_IMPACT = 60;       // ground-pound visual
+    private static final int T_HEAL_END = 70;
+
+    private static final UUID PHASE2_SPEED_ID = UUID.fromString("7b2a5c1e-3f0d-4a5b-9d0e-5c1f2a7b9e41");
+    private static final UUID PHASE2_DAMAGE_ID = UUID.fromString("c3d94a16-8e72-4b5f-a1c0-2d7e6f08b3a9");
 
     /** Incremented on every punch. Drives the combo variant and restarts the client animation. */
     private static final EntityDataAccessor<Integer> DATA_PUNCH_COUNT =
@@ -51,13 +73,25 @@ public class GusEntity extends Monster {
     /** Current leap phase (LEAP_*). Drives the leap animation on the client. */
     private static final EntityDataAccessor<Integer> DATA_LEAP_STATE =
             SynchedEntityData.defineId(GusEntity.class, EntityDataSerializers.INT);
+    /** Boss phase: 1 or 2. */
+    private static final EntityDataAccessor<Integer> DATA_PHASE =
+            SynchedEntityData.defineId(GusEntity.class, EntityDataSerializers.INT);
+    /** True while the phase 2 transition plays. */
+    private static final EntityDataAccessor<Boolean> DATA_TRANSITIONING =
+            SynchedEntityData.defineId(GusEntity.class, EntityDataSerializers.BOOLEAN);
 
     private final ServerBossEvent bossEvent =
             new ServerBossEvent(this.getDisplayName(), BossEvent.BossBarColor.RED, BossEvent.BossBarOverlay.PROGRESS);
 
-    /** Client only: tickCount at which the current punch / leap phase started. */
+    /** Server only (saved): the transition has been triggered. Guarantees it can only happen once. */
+    private boolean phase2Triggered;
+    /** Server only (saved): 0 = not transitioning, otherwise ticks since the transition began. */
+    private int transitionTick;
+
+    /** Client only: tickCount at which the current animation started. */
     private int punchAnimStartTick = -1000;
     private int leapStateStartTick = -1000;
+    private int transitionStartTick = -1000;
 
     public GusEntity(EntityType<? extends GusEntity> type, Level level) {
         super(type, level);
@@ -92,6 +126,8 @@ public class GusEntity extends Monster {
         super.defineSynchedData();
         this.entityData.define(DATA_PUNCH_COUNT, 0);
         this.entityData.define(DATA_LEAP_STATE, LEAP_NONE);
+        this.entityData.define(DATA_PHASE, 1);
+        this.entityData.define(DATA_TRANSITIONING, false);
     }
 
     @Override
@@ -102,8 +138,55 @@ public class GusEntity extends Monster {
                 this.punchAnimStartTick = this.tickCount;
             } else if (DATA_LEAP_STATE.equals(key)) {
                 this.leapStateStartTick = this.tickCount;
+            } else if (DATA_TRANSITIONING.equals(key) && this.isTransitioning()) {
+                this.transitionStartTick = this.tickCount;
             }
         }
+    }
+
+    // ---- phase state --------------------------------------------------------------------------
+
+    public int getPhase() {
+        return this.entityData.get(DATA_PHASE);
+    }
+
+    public boolean isPhase2() {
+        return this.getPhase() >= 2;
+    }
+
+    public boolean isTransitioning() {
+        return this.entityData.get(DATA_TRANSITIONING);
+    }
+
+    /** Client: ticks since the phase 2 transition began. */
+    public float getTransitionTicks(float ageInTicks) {
+        return ageInTicks - (float) this.transitionStartTick;
+    }
+
+    /** Phase 2 attacks come faster. */
+    private float tempo() {
+        return this.isPhase2() ? (float) GusStats.PHASE2_TEMPO_MULT : 1.0F;
+    }
+
+    public int getPunchIntervalTicks() {
+        return Math.max(4, Math.round(GusStats.PUNCH_INTERVAL_TICKS * this.tempo()));
+    }
+
+    public int getPunchAnimTicks() {
+        return Math.max(4, Math.round(GusStats.PUNCH_ANIM_TICKS * this.tempo()));
+    }
+
+    public int getPunchHitDelayTicks() {
+        return Math.max(2, Math.round(GusStats.PUNCH_HIT_DELAY_TICKS * this.tempo()));
+    }
+
+    public int getLeapCooldownTicks() {
+        return Math.round(GusStats.LEAP_COOLDOWN_TICKS * this.tempo());
+    }
+
+    /** Phase 2 deals +10% damage (the attribute covers punches; this covers the slam). */
+    public float getDamageMultiplier() {
+        return this.isPhase2() ? 1.0F + (float) GusStats.PHASE2_DAMAGE_BONUS : 1.0F;
     }
 
     // ---- attack 1: punch combo ----------------------------------------------------------------
@@ -130,7 +213,7 @@ public class GusEntity extends Monster {
 
     /** Client: progress 0..1 of the current punch animation, or -1 when not punching. */
     public float getPunchProgress(float ageInTicks) {
-        float t = (ageInTicks - (float) this.punchAnimStartTick) / (float) GusStats.PUNCH_ANIM_TICKS;
+        float t = (ageInTicks - (float) this.punchAnimStartTick) / (float) this.getPunchAnimTicks();
         return (t >= 0.0F && t < 1.0F) ? t : -1.0F;
     }
 
@@ -171,7 +254,8 @@ public class GusEntity extends Monster {
                 continue;   // outside the shockwave, or jumped over it
             }
             float falloff = (float) (1.0D - 0.6D * (dist / radius));
-            if (victim.hurt(this.damageSources().mobAttack(this), GusStats.SLAM_DAMAGE * falloff)) {
+            float damage = GusStats.SLAM_DAMAGE * this.getDamageMultiplier() * falloff;
+            if (victim.hurt(this.damageSources().mobAttack(this), damage)) {
                 double kb = 1.0D - victim.getAttributeValue(Attributes.KNOCKBACK_RESISTANCE);
                 if (kb > 0.0D) {
                     double len = Math.max(dist, 0.001D);
@@ -182,19 +266,23 @@ public class GusEntity extends Monster {
             }
         }
 
-        // impact effects: sound, debris burst, expanding dust ring
-        serverLevel.playSound(null, c.x, c.y, c.z, SoundEvents.GENERIC_EXPLODE, SoundSource.HOSTILE, 2.0F, 0.6F);
-        serverLevel.playSound(null, c.x, c.y, c.z, SoundEvents.IRON_GOLEM_ATTACK, SoundSource.HOSTILE, 2.0F, 0.5F);
-        BlockState below = serverLevel.getBlockState(this.blockPosition().below());
-        serverLevel.sendParticles(new BlockParticleOption(ParticleTypes.BLOCK, below),
+        this.spawnImpactEffects(serverLevel, c, radius);
+    }
+
+    /** Sound, debris burst and an expanding dust ring. */
+    private void spawnImpactEffects(ServerLevel level, Vec3 c, double radius) {
+        level.playSound(null, c.x, c.y, c.z, SoundEvents.GENERIC_EXPLODE, SoundSource.HOSTILE, 2.0F, 0.6F);
+        level.playSound(null, c.x, c.y, c.z, SoundEvents.IRON_GOLEM_ATTACK, SoundSource.HOSTILE, 2.0F, 0.5F);
+        BlockState below = level.getBlockState(this.blockPosition().below());
+        level.sendParticles(new BlockParticleOption(ParticleTypes.BLOCK, below),
                 c.x, c.y + 0.1D, c.z, 60, 1.5D, 0.2D, 1.5D, 0.15D);
-        serverLevel.sendParticles(ParticleTypes.EXPLOSION, c.x, c.y + 0.2D, c.z, 3, 1.0D, 0.1D, 1.0D, 0.0D);
+        level.sendParticles(ParticleTypes.EXPLOSION, c.x, c.y + 0.2D, c.z, 3, 1.0D, 0.1D, 1.0D, 0.0D);
         for (int ring = 1; ring <= 4; ring++) {
             double ringRadius = radius * ring / 4.0D;
             int count = 8 + ring * 6;
             for (int i = 0; i < count; i++) {
                 double angle = (Math.PI * 2.0D * i) / count;
-                serverLevel.sendParticles(ParticleTypes.CLOUD,
+                level.sendParticles(ParticleTypes.CLOUD,
                         c.x + Math.cos(angle) * ringRadius, c.y + 0.1D, c.z + Math.sin(angle) * ringRadius,
                         1, 0.0D, 0.05D, 0.0D, 0.02D);
             }
@@ -207,12 +295,147 @@ public class GusEntity extends Monster {
         return false;
     }
 
+    // ---- phase 2 transition -------------------------------------------------------------------
+
+    /** Invulnerable while transitioning (commands like /kill still work). */
+    @Override
+    public boolean isInvulnerableTo(DamageSource source) {
+        if (this.isTransitioning() && !source.is(DamageTypeTags.BYPASSES_INVULNERABILITY)) {
+            return true;
+        }
+        return super.isInvulnerableTo(source);
+    }
+
+    /**
+     * Phase 1 is never fatal: the hit that would bring Gus to 10 HP or below starts the transition instead
+     * (health is kept above zero so a single big hit cannot skip phase 2).
+     */
+    @Override
+    protected void actuallyHurt(DamageSource source, float amount) {
+        super.actuallyHurt(source, amount);
+        if (this.level().isClientSide || this.phase2Triggered
+                || source.is(DamageTypeTags.BYPASSES_INVULNERABILITY)) {
+            return;
+        }
+        if (this.getHealth() <= GusStats.PHASE2_TRIGGER_HEALTH) {
+            if (this.getHealth() <= 0.0F) {
+                this.setHealth(1.0F);
+            }
+            this.phase2Triggered = true;
+            this.transitionTick = 1;
+            this.entityData.set(DATA_TRANSITIONING, true);
+        }
+    }
+
+    /** Server: runs every tick while transitioning. */
+    private void tickTransition() {
+        if (this.transitionTick <= 0) {
+            return;
+        }
+        ServerLevel level = (ServerLevel) this.level();
+        this.getNavigation().stop();
+        Vec3 motion = this.getDeltaMovement();
+        this.setDeltaMovement(0.0D, motion.y, 0.0D);
+
+        int n = this.transitionTick;
+        if (n == 1) {
+            level.playSound(null, this.getX(), this.getY(), this.getZ(),
+                    SoundEvents.ENDER_DRAGON_GROWL, SoundSource.HOSTILE, 3.0F, 0.6F);
+        }
+        if (n == T_ROAR) {
+            level.playSound(null, this.getX(), this.getY(), this.getZ(),
+                    SoundEvents.RAVAGER_ROAR, SoundSource.HOSTILE, 3.0F, 0.6F);
+            level.sendParticles(ParticleTypes.LARGE_SMOKE, this.getX(), this.getY() + 2.0D, this.getZ(),
+                    40, 1.2D, 1.0D, 1.2D, 0.02D);
+        }
+        if (n == T_SWITCH) {
+            this.entityData.set(DATA_PHASE, 2);
+            this.applyPhase2Buffs();
+            this.spawnPiglins(level);
+            level.sendParticles(ParticleTypes.ANGRY_VILLAGER, this.getX(), this.getY() + 2.8D, this.getZ(),
+                    12, 0.8D, 0.5D, 0.8D, 0.0D);
+        }
+        if (n >= T_HEAL_START && n < T_HEAL_END) {
+            this.heal((this.getMaxHealth() - GusStats.PHASE2_TRIGGER_HEALTH) / (float) (T_HEAL_END - T_HEAL_START));
+        }
+        if (n == T_IMPACT) {
+            this.spawnImpactEffects(level, this.position(), 8.0D);
+        }
+
+        if (n >= GusStats.TRANSITION_TICKS) {
+            this.setHealth(this.getMaxHealth());
+            this.transitionTick = 0;
+            this.entityData.set(DATA_TRANSITIONING, false);
+        } else {
+            this.transitionTick++;
+        }
+    }
+
+    /** +50% speed and +10% damage. Safe to call repeatedly (e.g. after loading a save). */
+    private void applyPhase2Buffs() {
+        AttributeInstance speed = this.getAttribute(Attributes.MOVEMENT_SPEED);
+        if (speed != null && speed.getModifier(PHASE2_SPEED_ID) == null) {
+            speed.addPermanentModifier(new AttributeModifier(PHASE2_SPEED_ID, "Gus phase 2 speed",
+                    GusStats.PHASE2_SPEED_BONUS, AttributeModifier.Operation.MULTIPLY_BASE));
+        }
+        AttributeInstance damage = this.getAttribute(Attributes.ATTACK_DAMAGE);
+        if (damage != null && damage.getModifier(PHASE2_DAMAGE_ID) == null) {
+            damage.addPermanentModifier(new AttributeModifier(PHASE2_DAMAGE_ID, "Gus phase 2 damage",
+                    GusStats.PHASE2_DAMAGE_BONUS, AttributeModifier.Operation.MULTIPLY_BASE));
+        }
+    }
+
+    private void spawnPiglins(ServerLevel level) {
+        LivingEntity target = this.getTarget();
+        for (int i = 0; i < GusStats.PIGLIN_COUNT; i++) {
+            Piglin piglin = EntityType.PIGLIN.create(level);
+            if (piglin == null) {
+                continue;
+            }
+            BlockPos pos = this.findPiglinSpawnPos(level);
+            piglin.moveTo(pos.getX() + 0.5D, pos.getY(), pos.getZ() + 0.5D, this.random.nextFloat() * 360.0F, 0.0F);
+            piglin.finalizeSpawn(level, level.getCurrentDifficultyAt(pos), MobSpawnType.MOB_SUMMONED, null, null);
+            piglin.setBaby(false);
+            piglin.setImmuneToZombification(true);   // they would turn into zombified piglins in the Overworld
+            piglin.setPersistenceRequired();
+            if (target != null) {
+                piglin.getBrain().setMemory(MemoryModuleType.ATTACK_TARGET, target);
+            }
+            level.addFreshEntity(piglin);
+            level.sendParticles(ParticleTypes.POOF, pos.getX() + 0.5D, pos.getY() + 0.5D, pos.getZ() + 0.5D,
+                    12, 0.3D, 0.5D, 0.3D, 0.05D);
+        }
+        level.playSound(null, this.getX(), this.getY(), this.getZ(),
+                SoundEvents.PIGLIN_ANGRY, SoundSource.HOSTILE, 2.0F, 0.8F);
+    }
+
+    /** A random standable spot 4-10 blocks away (same height band as Gus). */
+    private BlockPos findPiglinSpawnPos(ServerLevel level) {
+        for (int attempt = 0; attempt < 20; attempt++) {
+            double angle = this.random.nextDouble() * Math.PI * 2.0D;
+            double dist = 4.0D + this.random.nextDouble() * 6.0D;
+            int x = Mth.floor(this.getX() + Math.cos(angle) * dist);
+            int z = Mth.floor(this.getZ() + Math.sin(angle) * dist);
+            for (int dy = 3; dy >= -3; dy--) {
+                BlockPos pos = new BlockPos(x, this.getBlockY() + dy, z);
+                BlockPos floor = pos.below();
+                if (level.getBlockState(pos).isAir() && level.getBlockState(pos.above()).isAir()
+                        && level.getBlockState(floor).isFaceSturdy(level, floor, Direction.UP)) {
+                    return pos;
+                }
+            }
+        }
+        return this.blockPosition();
+    }
+
     // ---- passive: combat regeneration + boss bar ----------------------------------------------
 
     @Override
     protected void customServerAiStep() {
         super.customServerAiStep();
-        if (this.getTarget() != null && this.tickCount % 20 == 0 && this.getHealth() < this.getMaxHealth()) {
+        this.tickTransition();
+        if (this.getTarget() != null && !this.isTransitioning()
+                && this.tickCount % 20 == 0 && this.getHealth() < this.getMaxHealth()) {
             this.heal(GusStats.COMBAT_REGEN_PER_SECOND);
         }
         this.bossEvent.setProgress(this.getHealth() / this.getMaxHealth());
@@ -237,10 +460,25 @@ public class GusEntity extends Monster {
     }
 
     @Override
+    public void addAdditionalSaveData(CompoundTag tag) {
+        super.addAdditionalSaveData(tag);
+        tag.putInt("GusPhase", this.getPhase());
+        tag.putBoolean("GusPhase2Triggered", this.phase2Triggered);
+        tag.putInt("GusTransitionTick", this.transitionTick);
+    }
+
+    @Override
     public void readAdditionalSaveData(CompoundTag tag) {
         super.readAdditionalSaveData(tag);
         if (this.hasCustomName()) {
             this.bossEvent.setName(this.getDisplayName());
+        }
+        this.phase2Triggered = tag.getBoolean("GusPhase2Triggered");
+        this.transitionTick = tag.getInt("GusTransitionTick");
+        this.entityData.set(DATA_PHASE, Math.max(1, tag.getInt("GusPhase")));
+        this.entityData.set(DATA_TRANSITIONING, this.transitionTick > 0);
+        if (this.isPhase2()) {
+            this.applyPhase2Buffs();
         }
     }
 

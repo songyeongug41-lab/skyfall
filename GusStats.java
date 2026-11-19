@@ -25,6 +25,14 @@ public final class GusStats {
     public static final double LEAP_FLIGHT_TICKS = 21.0D;     // matches LEAP_UP_SPEED; used to pick horizontal speed
     public static final float SLAM_DAMAGE = 18.0F;            // TODO decide after balance review (100% at center, 40% at the edge)
     public static final double SLAM_RADIUS = 6.0D;
+
+    // ---- phase 2 ----
+    public static final float PHASE2_TRIGGER_HEALTH = 10.0F;  // phase 2 starts (once) when health drops to this or below
+    public static final int TRANSITION_TICKS = 80;            // length of the invulnerable transition (4 seconds)
+    public static final int PIGLIN_COUNT = 10;
+    public static final double PHASE2_DAMAGE_BONUS = 0.10D;   // +10% damage
+    public static final double PHASE2_SPEED_BONUS = 0.50D;    // +50% movement speed
+    public static final double PHASE2_TEMPO_MULT = 0.70D;     // attack intervals x0.7 (= faster)
     public static final float COMBAT_REGEN_PER_SECOND = 2.0F; // TODO decide after balance review
     public static final int XP_REWARD = 500;
 }
