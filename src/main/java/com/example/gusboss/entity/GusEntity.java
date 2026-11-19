@@ -29,14 +29,17 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 
-/** Gus, The Iron Golem - step 1: body, stats, fast melee, combat regen, vanilla boss bar. */
+/** Gus, The Iron Golem - step 1: body, stats, fast melee combo, combat regen, vanilla boss bar. */
 public class GusEntity extends Monster {
-    /** Incremented on every punch; the model uses it to alternate fists. */
+    /** Incremented on every punch. Drives the combo variant and restarts the client animation. */
     private static final EntityDataAccessor<Integer> DATA_PUNCH_COUNT =
             SynchedEntityData.defineId(GusEntity.class, EntityDataSerializers.INT);
 
     private final ServerBossEvent bossEvent =
             new ServerBossEvent(this.getDisplayName(), BossEvent.BossBarColor.RED, BossEvent.BossBarOverlay.PROGRESS);
+
+    /** Client only: tickCount at which the current punch animation started. */
+    private int punchAnimStartTick = -1000;
 
     public GusEntity(EntityType<? extends GusEntity> type, Level level) {
         super(type, level);
@@ -71,18 +74,43 @@ public class GusEntity extends Monster {
         this.entityData.define(DATA_PUNCH_COUNT, 0);
     }
 
+    // ---- punch combo --------------------------------------------------------------------------
+
     public int getPunchCount() {
         return this.entityData.get(DATA_PUNCH_COUNT);
     }
 
-    /** Called by the melee goal each time a punch lands; swings the arm and flips the fist. */
-    public void onPunch() {
+    /** 0 = right straight, 1 = left straight, 2 = two-fisted slam (repeats). */
+    public int getPunchVariant() {
+        return Math.floorMod(this.getPunchCount() - 1, 3);
+    }
+
+    /** Server: begin a punch. The damage itself is applied a few ticks later by the goal. */
+    public void startPunch() {
         this.entityData.set(DATA_PUNCH_COUNT, this.getPunchCount() + 1);
-        this.swing(net.minecraft.world.InteractionHand.MAIN_HAND);
+        this.playSound(SoundEvents.PLAYER_ATTACK_SWEEP, 1.0F, 0.6F);
+    }
+
+    /** Server: the fist connects. */
+    public void onPunchImpact() {
         this.playSound(SoundEvents.IRON_GOLEM_ATTACK, 1.0F, 1.0F);
     }
 
-    // ---- passive: combat regeneration + boss bar --------------------------------------------
+    @Override
+    public void onSyncedDataUpdated(EntityDataAccessor<?> key) {
+        super.onSyncedDataUpdated(key);
+        if (DATA_PUNCH_COUNT.equals(key) && this.level().isClientSide && this.getPunchCount() > 0) {
+            this.punchAnimStartTick = this.tickCount;
+        }
+    }
+
+    /** Client: progress 0..1 of the current punch animation, or -1 when not punching. */
+    public float getPunchProgress(float ageInTicks) {
+        float t = (ageInTicks - (float) this.punchAnimStartTick) / (float) GusStats.PUNCH_ANIM_TICKS;
+        return (t >= 0.0F && t < 1.0F) ? t : -1.0F;
+    }
+
+    // ---- passive: combat regeneration + boss bar ----------------------------------------------
 
     @Override
     protected void customServerAiStep() {
@@ -124,7 +152,7 @@ public class GusEntity extends Monster {
         return false;
     }
 
-    // ---- sounds (vanilla iron golem sounds for now) ------------------------------------------
+    // ---- sounds (vanilla iron golem sounds for now) -------------------------------------------
 
     @Override
     protected SoundEvent getHurtSound(DamageSource source) {

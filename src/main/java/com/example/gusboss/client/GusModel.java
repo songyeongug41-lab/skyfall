@@ -14,12 +14,33 @@ import net.minecraft.client.model.geom.builders.PartDefinition;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
 
-/** Iron-golem shaped model with its own animation code (so it is free to diverge from vanilla). */
+/**
+ * Iron-golem shaped model with its own animation set:
+ *  - run: forward lean, body bounce and sway, long stride
+ *  - fighting stance while aggressive: hunched, fists forward and flared
+ *  - punch combo: right straight -> left straight -> two-fisted slam (torso twists with every hit)
+ * The torso is pivoted at the hips and owns the head and arms, so leaning/twisting moves them together.
+ */
 public class GusModel<T extends GusEntity> extends HierarchicalModel<T> {
     public static final ModelLayerLocation LAYER_LOCATION =
             new ModelLayerLocation(new ResourceLocation(GusBossMod.MOD_ID, "gus"), "main");
 
+    private static final float RAD = (float) Math.PI / 180.0F;
+
+    // ---- punch keyframes: progress 0..1 over PUNCH_ANIM_TICKS, the hit lands at 0.40 ----------
+    // values are offsets from the current stance pose (0 at both ends)
+    private static final float[] KEY_TIMES   = {0.00F, 0.22F, 0.40F, 0.55F, 1.00F};
+    // straight punch (right-fist signs; the left fist mirrors the twist)
+    private static final float[] STRAIGHT_ARM   = {0.0F,  1.2F, -1.1F, -1.1F, 0.0F};
+    private static final float[] STRAIGHT_OFF   = {0.0F, -0.2F,  0.6F,  0.6F, 0.0F};   // the other arm
+    private static final float[] STRAIGHT_TWIST = {0.0F,  0.40F, -0.55F, -0.55F, 0.0F};
+    private static final float[] STRAIGHT_LEAN  = {0.0F, -0.08F, 0.22F, 0.22F, 0.0F};
+    // two-fisted slam
+    private static final float[] SLAM_ARM  = {0.0F, -2.4F, -0.4F, -0.4F, 0.0F};
+    private static final float[] SLAM_LEAN = {0.0F, -0.22F, 0.45F, 0.45F, 0.0F};
+
     private final ModelPart root;
+    private final ModelPart torso;
     private final ModelPart head;
     private final ModelPart rightArm;
     private final ModelPart leftArm;
@@ -28,30 +49,34 @@ public class GusModel<T extends GusEntity> extends HierarchicalModel<T> {
 
     public GusModel(ModelPart root) {
         this.root = root;
-        this.head = root.getChild("head");
-        this.rightArm = root.getChild("right_arm");
-        this.leftArm = root.getChild("left_arm");
+        this.torso = root.getChild("torso");
+        this.head = this.torso.getChild("head");
+        this.rightArm = this.torso.getChild("right_arm");
+        this.leftArm = this.torso.getChild("left_arm");
         this.rightLeg = root.getChild("right_leg");
         this.leftLeg = root.getChild("left_leg");
     }
 
+    /** Same geometry and texture layout as the vanilla golem, re-parented under a hip-pivoted torso. */
     public static LayerDefinition createBodyLayer() {
         MeshDefinition mesh = new MeshDefinition();
         PartDefinition part = mesh.getRoot();
-        part.addOrReplaceChild("head",
+
+        PartDefinition torso = part.addOrReplaceChild("torso",
+                CubeListBuilder.create().texOffs(0, 40).addBox(-9.0F, -17.0F, -6.0F, 18.0F, 12.0F, 11.0F)
+                        .texOffs(0, 70).addBox(-4.5F, -5.0F, -3.0F, 9.0F, 5.0F, 6.0F, new CubeDeformation(0.5F)),
+                PartPose.offset(0.0F, 8.0F, 0.0F));
+        torso.addOrReplaceChild("head",
                 CubeListBuilder.create().texOffs(0, 0).addBox(-4.0F, -12.0F, -5.5F, 8.0F, 10.0F, 8.0F)
                         .texOffs(24, 0).addBox(-1.0F, -5.0F, -7.5F, 2.0F, 4.0F, 2.0F),
-                PartPose.offset(0.0F, -7.0F, -2.0F));
-        part.addOrReplaceChild("body",
-                CubeListBuilder.create().texOffs(0, 40).addBox(-9.0F, -2.0F, -6.0F, 18.0F, 12.0F, 11.0F)
-                        .texOffs(0, 70).addBox(-4.5F, 10.0F, -3.0F, 9.0F, 5.0F, 6.0F, new CubeDeformation(0.5F)),
-                PartPose.offset(0.0F, -7.0F, 0.0F));
-        part.addOrReplaceChild("right_arm",
+                PartPose.offset(0.0F, -15.0F, -2.0F));
+        torso.addOrReplaceChild("right_arm",
                 CubeListBuilder.create().texOffs(60, 21).addBox(-13.0F, -2.5F, -3.0F, 4.0F, 30.0F, 6.0F),
-                PartPose.offset(0.0F, -7.0F, 0.0F));
-        part.addOrReplaceChild("left_arm",
+                PartPose.offset(0.0F, -15.0F, 0.0F));
+        torso.addOrReplaceChild("left_arm",
                 CubeListBuilder.create().texOffs(60, 58).addBox(9.0F, -2.5F, -3.0F, 4.0F, 30.0F, 6.0F),
-                PartPose.offset(0.0F, -7.0F, 0.0F));
+                PartPose.offset(0.0F, -15.0F, 0.0F));
+
         part.addOrReplaceChild("right_leg",
                 CubeListBuilder.create().texOffs(37, 0).addBox(-3.5F, -3.0F, -3.0F, 6.0F, 16.0F, 5.0F),
                 PartPose.offset(-4.0F, 11.0F, 0.0F));
@@ -66,26 +91,80 @@ public class GusModel<T extends GusEntity> extends HierarchicalModel<T> {
         return this.root;
     }
 
+    /** Smooth keyframe interpolation between (times, values). */
+    private static float sample(float p, float[] times, float[] values) {
+        if (p <= times[0]) {
+            return values[0];
+        }
+        for (int i = 1; i < times.length; i++) {
+            if (p <= times[i]) {
+                float t = (p - times[i - 1]) / (times[i] - times[i - 1]);
+                t = t * t * (3.0F - 2.0F * t);
+                return Mth.lerp(t, values[i - 1], values[i]);
+            }
+        }
+        return values[values.length - 1];
+    }
+
     @Override
     public void setupAnim(T entity, float limbSwing, float limbSwingAmount, float ageInTicks,
                           float netHeadYaw, float headPitch) {
-        this.head.yRot = netHeadYaw * ((float) Math.PI / 180.0F);
-        this.head.xRot = headPitch * ((float) Math.PI / 180.0F);
+        float stance = entity.isAggressive() ? 1.0F : 0.0F;
+        float run = Mth.cos(limbSwing * 0.6662F) * limbSwingAmount;     // -1..1 leg cycle
+        float breath = Mth.cos(ageInTicks * 0.09F) * 0.04F;
 
-        // walk cycle (same feel as the vanilla golem)
-        float wave = 1.5F * Mth.triangleWave(limbSwing, 13.0F) * limbSwingAmount;
-        this.rightLeg.xRot = -wave;
-        this.leftLeg.xRot = wave;
-        this.rightLeg.yRot = 0.0F;
-        this.leftLeg.yRot = 0.0F;
-        this.rightArm.xRot = -0.2F * limbSwingAmount + wave;
-        this.leftArm.xRot = -0.2F * limbSwingAmount - wave;
+        // ---- base pose: idle / run / fighting stance ----
+        float lean = 0.12F * stance + 0.18F * limbSwingAmount;          // forward hunch
+        float twist = 0.0F;
+        float armBase = -0.45F * stance;                                // fists forward when fighting
+        float rightArmX = armBase + 1.3F * run;
+        float leftArmX = armBase - 1.3F * run;
+        float flare = 0.05F + 0.17F * stance;                           // arms held away from the body
 
-        // punch: attackTime goes 0 -> 1 over the swing; alternate fists using the synced punch counter
-        if (this.attackTime > 0.0F) {
-            float thrust = Mth.sin(this.attackTime * (float) Math.PI);
-            ModelPart punchArm = (entity.getPunchCount() % 2 == 0) ? this.rightArm : this.leftArm;
-            punchArm.xRot = -1.55F * thrust;
+        // ---- punch combo overlay ----
+        float p = entity.getPunchProgress(ageInTicks);
+        if (p >= 0.0F) {
+            int variant = entity.getPunchVariant();
+            if (variant == 2) {
+                float arm = sample(p, KEY_TIMES, SLAM_ARM);
+                rightArmX += arm;
+                leftArmX += arm;
+                lean += sample(p, KEY_TIMES, SLAM_LEAN);
+            } else {
+                float arm = sample(p, KEY_TIMES, STRAIGHT_ARM);
+                float off = sample(p, KEY_TIMES, STRAIGHT_OFF);
+                if (variant == 0) {
+                    rightArmX += arm;
+                    leftArmX += off;
+                    twist = sample(p, KEY_TIMES, STRAIGHT_TWIST);
+                } else {
+                    leftArmX += arm;
+                    rightArmX += off;
+                    twist = -sample(p, KEY_TIMES, STRAIGHT_TWIST);
+                }
+                lean += sample(p, KEY_TIMES, STRAIGHT_LEAN);
+            }
         }
+
+        // ---- apply ----
+        this.torso.xRot = lean + breath * 0.5F;
+        this.torso.yRot = twist;
+        this.torso.zRot = 0.0F;
+
+        // the head keeps looking at the target while the torso leans and twists
+        this.head.xRot = headPitch * RAD - 0.7F * lean;
+        this.head.yRot = netHeadYaw * RAD - twist;
+
+        this.rightArm.xRot = rightArmX;
+        this.leftArm.xRot = leftArmX;
+        this.rightArm.zRot = flare + breath;
+        this.leftArm.zRot = -(flare + breath);
+
+        this.rightLeg.xRot = -1.3F * run;
+        this.leftLeg.xRot = 1.3F * run;
+
+        // body bounce and sway while running
+        this.root.y = -Math.abs(Mth.sin(limbSwing * 0.6662F)) * 1.6F * limbSwingAmount;
+        this.root.zRot = Mth.sin(limbSwing * 0.6662F) * 0.05F * limbSwingAmount;
     }
 }

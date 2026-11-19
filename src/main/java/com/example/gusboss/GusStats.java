@@ -12,6 +12,8 @@ public final class GusStats {
     public static final double FOLLOW_RANGE = 64.0D;
 
     public static final int PUNCH_INTERVAL_TICKS = 10;        // 20 ticks = 1 second
+    public static final int PUNCH_ANIM_TICKS = 10;            // length of one punch animation
+    public static final int PUNCH_HIT_DELAY_TICKS = 4;        // damage lands when the fist is fully extended
     public static final float COMBAT_REGEN_PER_SECOND = 2.0F; // TODO decide after balance review
     public static final int XP_REWARD = 500;
 }

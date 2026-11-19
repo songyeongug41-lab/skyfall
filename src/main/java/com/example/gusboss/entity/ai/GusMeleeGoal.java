@@ -7,12 +7,14 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.goal.Goal;
 import net.minecraft.world.entity.player.Player;
 
-/** Chase the target at full speed and throw fast alternating punches (attack 1). */
+/** Chase the target at full speed and run the 3-hit punch combo (attack 1). */
 public class GusMeleeGoal extends Goal {
     private final GusEntity gus;
     private final double speedModifier;
     private int repathDelay;
     private int attackCooldown;
+    /** Ticks until the current punch connects; 0 = no punch in flight. */
+    private int hitDelay;
 
     public GusMeleeGoal(GusEntity gus, double speedModifier) {
         this.gus = gus;
@@ -45,12 +47,14 @@ public class GusMeleeGoal extends Goal {
         this.gus.setAggressive(true);
         this.repathDelay = 0;
         this.attackCooldown = 0;
+        this.hitDelay = 0;
     }
 
     @Override
     public void stop() {
         this.gus.setAggressive(false);
         this.gus.getNavigation().stop();
+        this.hitDelay = 0;
     }
 
     @Override
@@ -73,10 +77,21 @@ public class GusMeleeGoal extends Goal {
 
         double distSqr = this.gus.distanceToSqr(target.getX(), target.getY(), target.getZ());
         double reachSqr = this.gus.getBbWidth() * 2.0F * this.gus.getBbWidth() * 2.0F + target.getBbWidth();
+
+        // a punch is in flight: resolve it when the fist is fully extended
+        if (this.hitDelay > 0) {
+            this.hitDelay--;
+            if (this.hitDelay == 0 && distSqr <= reachSqr * 1.44D) {
+                this.gus.onPunchImpact();
+                this.gus.doHurtTarget(target);
+            }
+            return;
+        }
+
         if (this.attackCooldown <= 0 && distSqr <= reachSqr && this.gus.getSensing().hasLineOfSight(target)) {
             this.attackCooldown = GusStats.PUNCH_INTERVAL_TICKS;
-            this.gus.onPunch();
-            this.gus.doHurtTarget(target);
+            this.hitDelay = GusStats.PUNCH_HIT_DELAY_TICKS;
+            this.gus.startPunch();
         }
     }
 }
