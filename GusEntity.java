@@ -105,6 +105,8 @@ public class GusEntity extends Monster {
     private boolean phase2Triggered;
     /** Server only (saved): 0 = not transitioning, otherwise ticks since the transition began. */
     private int transitionTick;
+    /** Server only: health restored per tick during the heal window (computed when the window opens). */
+    private float healStep;
 
     /** Client only: tickCount at which the current animation started. */
     private int punchAnimStartTick = -1000;
@@ -407,7 +409,7 @@ public class GusEntity extends Monster {
     }
 
     /**
-     * Phase 1 is never fatal: the hit that would bring Gus to 10 HP or below starts the transition instead
+     * Phase 1 is never fatal: the hit that would bring Gus to 30% health or below starts the transition instead
      * (health is kept above zero so a single big hit cannot skip phase 2).
      */
     @Override
@@ -417,7 +419,7 @@ public class GusEntity extends Monster {
                 || source.is(DamageTypeTags.BYPASSES_INVULNERABILITY)) {
             return;
         }
-        if (this.getHealth() <= GusStats.PHASE2_TRIGGER_HEALTH) {
+        if (this.getHealth() <= this.getMaxHealth() * GusStats.PHASE2_TRIGGER_RATIO) {
             if (this.getHealth() <= 0.0F) {
                 this.setHealth(1.0F);
             }
@@ -456,7 +458,10 @@ public class GusEntity extends Monster {
                     12, 0.8D, 0.5D, 0.8D, 0.0D);
         }
         if (n >= T_HEAL_START && n < T_HEAL_END) {
-            this.heal((this.getMaxHealth() - GusStats.PHASE2_TRIGGER_HEALTH) / (float) (T_HEAL_END - T_HEAL_START));
+            if (n == T_HEAL_START || this.healStep <= 0.0F) {
+                this.healStep = (this.getMaxHealth() - this.getHealth()) / (float) (T_HEAL_END - n);
+            }
+            this.heal(this.healStep);
         }
         if (n == T_IMPACT) {
             this.spawnImpactEffects(level, this.position(), 8.0D);
