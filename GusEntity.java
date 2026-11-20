@@ -1,8 +1,11 @@
 package com.example.gusboss.entity;
 
 import com.example.gusboss.GusStats;
+import com.example.gusboss.entity.ai.GusGrabThrowGoal;
 import com.example.gusboss.entity.ai.GusLeapSlamGoal;
+import com.example.gusboss.entity.ai.GusMegaSlamGoal;
 import com.example.gusboss.entity.ai.GusMeleeGoal;
+import com.example.gusboss.entity.ai.GusRoarGoal;
 import java.util.List;
 import java.util.UUID;
 import javax.annotation.Nullable;
@@ -25,6 +28,8 @@ import net.minecraft.tags.DamageTypeTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.BossEvent;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.MobSpawnType;
@@ -49,13 +54,23 @@ import net.minecraft.world.phys.Vec3;
 
 /**
  * Gus, The Iron Golem.
- * Attack 1: punch combo. Attack 2: leap + ground slam. Phase 2: one-time transition at low health.
+ * Attack 1: punch combo. Attack 2: leap + ground slam. Phase 2: one-time transition at low health,
+ * then attack 3 (grab + throw), attack 4 (area jump slam) and attack 5 (roar).
  */
 public class GusEntity extends Monster {
     public static final int LEAP_NONE = 0;
     public static final int LEAP_WINDUP = 1;
     public static final int LEAP_AIR = 2;
     public static final int LEAP_SLAM = 3;
+
+    // phase 2 attack animations (DATA_ACTION)
+    public static final int ACTION_NONE = 0;
+    public static final int ACTION_GRAB_REACH = 1;
+    public static final int ACTION_GRAB_HOLD = 2;
+    public static final int ACTION_GRAB_THROW = 3;
+    public static final int ACTION_RECOVER = 4;
+    public static final int ACTION_ROAR_WINDUP = 5;
+    public static final int ACTION_ROAR = 6;
 
     // transition timeline (ticks since the transition began)
     private static final int T_ROAR = 25;
@@ -72,6 +87,9 @@ public class GusEntity extends Monster {
             SynchedEntityData.defineId(GusEntity.class, EntityDataSerializers.INT);
     /** Current leap phase (LEAP_*). Drives the leap animation on the client. */
     private static final EntityDataAccessor<Integer> DATA_LEAP_STATE =
+            SynchedEntityData.defineId(GusEntity.class, EntityDataSerializers.INT);
+    /** Phase 2 attack animation (ACTION_*). */
+    private static final EntityDataAccessor<Integer> DATA_ACTION =
             SynchedEntityData.defineId(GusEntity.class, EntityDataSerializers.INT);
     /** Boss phase: 1 or 2. */
     private static final EntityDataAccessor<Integer> DATA_PHASE =
@@ -92,6 +110,8 @@ public class GusEntity extends Monster {
     private int punchAnimStartTick = -1000;
     private int leapStateStartTick = -1000;
     private int transitionStartTick = -1000;
+    /** tickCount at which the current ACTION_* began (set on both sides). */
+    private int actionStartTick = -1000;
 
     public GusEntity(EntityType<? extends GusEntity> type, Level level) {
         super(type, level);
@@ -112,7 +132,11 @@ public class GusEntity extends Monster {
     @Override
     protected void registerGoals() {
         this.goalSelector.addGoal(0, new FloatGoal(this));
-        this.goalSelector.addGoal(1, new GusLeapSlamGoal(this));   // lower number = higher priority than the punches
+        // priority 1 = the special attacks (phase 2 ones only start in phase 2); priority 2 = the punches
+        this.goalSelector.addGoal(1, new GusRoarGoal(this));
+        this.goalSelector.addGoal(1, new GusGrabThrowGoal(this));
+        this.goalSelector.addGoal(1, new GusMegaSlamGoal(this));
+        this.goalSelector.addGoal(1, new GusLeapSlamGoal(this));
         this.goalSelector.addGoal(2, new GusMeleeGoal(this, 1.0D));
         this.goalSelector.addGoal(5, new WaterAvoidingRandomStrollGoal(this, 0.8D));
         this.goalSelector.addGoal(6, new LookAtPlayerGoal(this, Player.class, 16.0F));
@@ -126,6 +150,7 @@ public class GusEntity extends Monster {
         super.defineSynchedData();
         this.entityData.define(DATA_PUNCH_COUNT, 0);
         this.entityData.define(DATA_LEAP_STATE, LEAP_NONE);
+        this.entityData.define(DATA_ACTION, ACTION_NONE);
         this.entityData.define(DATA_PHASE, 1);
         this.entityData.define(DATA_TRANSITIONING, false);
     }
@@ -140,6 +165,8 @@ public class GusEntity extends Monster {
                 this.leapStateStartTick = this.tickCount;
             } else if (DATA_TRANSITIONING.equals(key) && this.isTransitioning()) {
                 this.transitionStartTick = this.tickCount;
+            } else if (DATA_ACTION.equals(key)) {
+                this.actionStartTick = this.tickCount;
             }
         }
     }
@@ -232,14 +259,23 @@ public class GusEntity extends Monster {
         return ageInTicks - (float) this.leapStateStartTick;
     }
 
-    /** Server: shockwave at the landing point. Jumping over it avoids the damage. */
+    /** Server: attack 2 shockwave at the landing point. */
     public void groundSlam() {
+        this.shockwave(GusStats.SLAM_RADIUS, GusStats.SLAM_DAMAGE, 0.9D);
+    }
+
+    /** Server: attack 4 shockwave (huge radius). */
+    public void megaSlam() {
+        this.shockwave(GusStats.MEGA_RADIUS, GusStats.MEGA_DAMAGE, GusStats.MEGA_KNOCKBACK);
+    }
+
+    /** Server: damaging shockwave around Gus. Jumping over it avoids the damage. */
+    private void shockwave(double radius, float baseDamage, double knockbackStrength) {
         if (this.level().isClientSide) {
             return;
         }
         ServerLevel serverLevel = (ServerLevel) this.level();
         Vec3 c = this.position();
-        double radius = GusStats.SLAM_RADIUS;
 
         AABB box = new AABB(c.x - radius, c.y - 1.5D, c.z - radius, c.x + radius, c.y + 3.0D, c.z + radius);
         List<LivingEntity> victims = serverLevel.getEntitiesOfClass(LivingEntity.class, box,
@@ -254,13 +290,14 @@ public class GusEntity extends Monster {
                 continue;   // outside the shockwave, or jumped over it
             }
             float falloff = (float) (1.0D - 0.6D * (dist / radius));
-            float damage = GusStats.SLAM_DAMAGE * this.getDamageMultiplier() * falloff;
+            float damage = baseDamage * this.getDamageMultiplier() * falloff;
             if (victim.hurt(this.damageSources().mobAttack(this), damage)) {
                 double kb = 1.0D - victim.getAttributeValue(Attributes.KNOCKBACK_RESISTANCE);
                 if (kb > 0.0D) {
                     double len = Math.max(dist, 0.001D);
                     victim.setDeltaMovement(victim.getDeltaMovement().add(
-                            dx / len * 0.9D * falloff * kb, 0.55D * kb, dz / len * 0.9D * falloff * kb));
+                            dx / len * knockbackStrength * falloff * kb, 0.55D * kb,
+                            dz / len * knockbackStrength * falloff * kb));
                     victim.hurtMarked = true;
                 }
             }
@@ -275,11 +312,11 @@ public class GusEntity extends Monster {
         level.playSound(null, c.x, c.y, c.z, SoundEvents.IRON_GOLEM_ATTACK, SoundSource.HOSTILE, 2.0F, 0.5F);
         BlockState below = level.getBlockState(this.blockPosition().below());
         level.sendParticles(new BlockParticleOption(ParticleTypes.BLOCK, below),
-                c.x, c.y + 0.1D, c.z, 60, 1.5D, 0.2D, 1.5D, 0.15D);
+                c.x, c.y + 0.1D, c.z, (int) (30.0D + radius * 6.0D), radius * 0.25D, 0.2D, radius * 0.25D, 0.15D);
         level.sendParticles(ParticleTypes.EXPLOSION, c.x, c.y + 0.2D, c.z, 3, 1.0D, 0.1D, 1.0D, 0.0D);
         for (int ring = 1; ring <= 4; ring++) {
             double ringRadius = radius * ring / 4.0D;
-            int count = 8 + ring * 6;
+            int count = Math.max(8, (int) (Math.PI * 2.0D * ringRadius / 1.2D));
             for (int i = 0; i < count; i++) {
                 double angle = (Math.PI * 2.0D * i) / count;
                 level.sendParticles(ParticleTypes.CLOUD,
@@ -293,6 +330,69 @@ public class GusEntity extends Monster {
     @Override
     public boolean causeFallDamage(float fallDistance, float multiplier, DamageSource source) {
         return false;
+    }
+
+    // ---- phase 2 attacks: shared animation state, carrying, roar ----------------------------
+
+    public int getAction() {
+        return this.entityData.get(DATA_ACTION);
+    }
+
+    public void setAction(int action) {
+        this.actionStartTick = this.tickCount;
+        this.entityData.set(DATA_ACTION, action);
+    }
+
+    /** Client: ticks since the current action began. */
+    public float getActionTicks(float ageInTicks) {
+        return ageInTicks - (float) this.actionStartTick;
+    }
+
+    /** A carried player rides overhead: the seat height rises while Gus lifts, so the grab looks right on both sides. */
+    @Override
+    public double getPassengersRidingOffset() {
+        if (this.getAction() == ACTION_GRAB_HOLD) {
+            double t = Mth.clamp((double) (this.tickCount - this.actionStartTick) / 12.0D, 0.0D, 1.0D);
+            double smooth = t * t * (3.0D - 2.0D * t);
+            return Mth.lerp(smooth, 2.0D, 3.6D);
+        }
+        if (this.getAction() == ACTION_GRAB_THROW) {
+            return 3.6D;
+        }
+        return 2.0D;
+    }
+
+    @Override
+    public void die(DamageSource source) {
+        this.ejectPassengers();
+        super.die(source);
+    }
+
+    /** Server: the roar. Everyone nearby gets Nausea and Wither. */
+    public void roarShout() {
+        if (this.level().isClientSide) {
+            return;
+        }
+        ServerLevel serverLevel = (ServerLevel) this.level();
+        double radius = GusStats.ROAR_RADIUS;
+        List<Player> players = serverLevel.getEntitiesOfClass(Player.class, this.getBoundingBox().inflate(radius),
+                p -> p.isAlive() && !p.isSpectator() && !p.isCreative() && p.distanceToSqr(this) <= radius * radius);
+        for (Player player : players) {
+            player.addEffect(new MobEffectInstance(MobEffects.CONFUSION, GusStats.ROAR_NAUSEA_TICKS, 0));
+            player.addEffect(new MobEffectInstance(MobEffects.WITHER, GusStats.ROAR_WITHER_TICKS,
+                    GusStats.ROAR_WITHER_AMPLIFIER));
+        }
+        // visible shock rings at head height
+        for (int ring = 1; ring <= 3; ring++) {
+            double ringRadius = ring * 2.5D;
+            int count = 24;
+            for (int i = 0; i < count; i++) {
+                double angle = (Math.PI * 2.0D * i) / count;
+                serverLevel.sendParticles(ParticleTypes.LARGE_SMOKE,
+                        this.getX() + Math.cos(angle) * ringRadius, this.getY() + 2.2D,
+                        this.getZ() + Math.sin(angle) * ringRadius, 1, 0.0D, 0.0D, 0.0D, 0.0D);
+            }
+        }
     }
 
     // ---- phase 2 transition -------------------------------------------------------------------
