@@ -6,6 +6,7 @@ import com.example.gusboss.entity.ai.GusLeapSlamGoal;
 import com.example.gusboss.entity.ai.GusMegaSlamGoal;
 import com.example.gusboss.entity.ai.GusMeleeGoal;
 import com.example.gusboss.entity.ai.GusRoarGoal;
+import com.mojang.logging.LogUtils;
 import java.util.List;
 import java.util.UUID;
 import javax.annotation.Nullable;
@@ -51,6 +52,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import org.slf4j.Logger;
 
 /**
  * Gus, The Iron Golem.
@@ -58,6 +60,8 @@ import net.minecraft.world.phys.Vec3;
  * then attack 3 (grab + throw), attack 4 (area jump slam) and attack 5 (roar).
  */
 public class GusEntity extends Monster {
+    private static final Logger LOGGER = LogUtils.getLogger();
+
     public static final int LEAP_NONE = 0;
     public static final int LEAP_WINDUP = 1;
     public static final int LEAP_AIR = 2;
@@ -415,8 +419,17 @@ public class GusEntity extends Monster {
     @Override
     protected void actuallyHurt(DamageSource source, float amount) {
         super.actuallyHurt(source, amount);
-        if (this.level().isClientSide || this.phase2Triggered
-                || source.is(DamageTypeTags.BYPASSES_INVULNERABILITY)) {
+        if (!source.is(DamageTypeTags.BYPASSES_INVULNERABILITY)) {
+            this.checkPhase2Trigger();
+        }
+    }
+
+    /**
+     * Starts the transition (once) when health is at or below the trigger line, and rescues a lethal hit.
+     * Called right after damage AND every tick, so changing health by any means (commands included) triggers it too.
+     */
+    private void checkPhase2Trigger() {
+        if (this.level().isClientSide || this.phase2Triggered) {
             return;
         }
         if (this.getHealth() <= this.getMaxHealth() * GusStats.PHASE2_TRIGGER_RATIO) {
@@ -426,6 +439,7 @@ public class GusEntity extends Monster {
             this.phase2Triggered = true;
             this.transitionTick = 1;
             this.entityData.set(DATA_TRANSITIONING, true);
+            LOGGER.info("[Gus] phase 2 transition started (health {} / {})", this.getHealth(), this.getMaxHealth());
         }
     }
 
@@ -454,6 +468,7 @@ public class GusEntity extends Monster {
             this.entityData.set(DATA_PHASE, 2);
             this.applyPhase2Buffs();
             this.spawnPiglins(level);
+            LOGGER.info("[Gus] phase 2 active, piglins summoned");
             level.sendParticles(ParticleTypes.ANGRY_VILLAGER, this.getX(), this.getY() + 2.8D, this.getZ(),
                     12, 0.8D, 0.5D, 0.8D, 0.0D);
         }
@@ -538,6 +553,7 @@ public class GusEntity extends Monster {
     @Override
     protected void customServerAiStep() {
         super.customServerAiStep();
+        this.checkPhase2Trigger();
         this.tickTransition();
         if (this.getTarget() != null && !this.isTransitioning()
                 && this.tickCount % 20 == 0 && this.getHealth() < this.getMaxHealth()) {
