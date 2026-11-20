@@ -4,7 +4,7 @@ license="All Rights Reserved"
 
 [[mods]]
 modId="gusboss"
-version="0.1.0"
+version="0.3.0"
 displayName="Gus Boss"
 description='''Gus, The Iron Golem - custom boss mob.'''
 

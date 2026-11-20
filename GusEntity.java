@@ -407,6 +407,12 @@ public class GusEntity extends Monster {
         this.entityData.set(DATA_PHASE, 2);
         this.applyPhase2Buffs();
         this.setHealth(this.getMaxHealth());
+        this.bossEvent.setColor(BossEvent.BossBarColor.PURPLE);
+        for (ServerPlayer player : level.players()) {
+            if (player.distanceToSqr(this) < 64.0D * 64.0D) {
+                player.displayClientMessage(Component.literal("Gus enters phase 2!"), true);
+            }
+        }
         this.spawnPiglins(level);
 
         level.playSound(null, this.getX(), this.getY(), this.getZ(),
@@ -521,6 +527,7 @@ public class GusEntity extends Monster {
         this.entityData.set(DATA_PHASE, Math.max(1, tag.getInt("GusPhase")));
         if (this.isPhase2()) {
             this.applyPhase2Buffs();
+            this.bossEvent.setColor(BossEvent.BossBarColor.PURPLE);
         }
     }
 
