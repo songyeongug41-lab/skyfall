@@ -25,7 +25,7 @@ public class GusRoarGoal extends Goal {
     @Override
     public boolean canUse() {
         LivingEntity target = this.gus.getTarget();
-        if (!this.gus.isPhase2() || this.gus.isTransitioning() || target == null || !target.isAlive()
+        if (!this.gus.isPhase2() || target == null || !target.isAlive()
                 || !this.gus.onGround() || this.gus.tickCount < this.nextUseTick) {
             return false;
         }
@@ -40,7 +40,7 @@ public class GusRoarGoal extends Goal {
 
     @Override
     public boolean canContinueToUse() {
-        return this.phase != Phase.DONE && !this.gus.isTransitioning();
+        return this.phase != Phase.DONE;
     }
 
     @Override

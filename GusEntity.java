@@ -56,7 +56,7 @@ import org.slf4j.Logger;
 
 /**
  * Gus, The Iron Golem.
- * Attack 1: punch combo. Attack 2: leap + ground slam. Phase 2: one-time transition at low health,
+ * Attack 1: punch combo. Attack 2: leap + ground slam. Phase 2: instant switch at low health (full heal),
  * then attack 3 (grab + throw), attack 4 (area jump slam) and attack 5 (roar).
  */
 public class GusEntity extends Monster {
@@ -76,13 +76,6 @@ public class GusEntity extends Monster {
     public static final int ACTION_ROAR_WINDUP = 5;
     public static final int ACTION_ROAR = 6;
 
-    // transition timeline (ticks since the transition began)
-    private static final int T_ROAR = 25;
-    private static final int T_HEAL_START = 30;
-    private static final int T_SWITCH = 40;       // phase flips to 2, buffs apply, piglins arrive
-    private static final int T_IMPACT = 60;       // ground-pound visual
-    private static final int T_HEAL_END = 70;
-
     private static final UUID PHASE2_SPEED_ID = UUID.fromString("7b2a5c1e-3f0d-4a5b-9d0e-5c1f2a7b9e41");
     private static final UUID PHASE2_DAMAGE_ID = UUID.fromString("c3d94a16-8e72-4b5f-a1c0-2d7e6f08b3a9");
 
@@ -98,24 +91,16 @@ public class GusEntity extends Monster {
     /** Boss phase: 1 or 2. */
     private static final EntityDataAccessor<Integer> DATA_PHASE =
             SynchedEntityData.defineId(GusEntity.class, EntityDataSerializers.INT);
-    /** True while the phase 2 transition plays. */
-    private static final EntityDataAccessor<Boolean> DATA_TRANSITIONING =
-            SynchedEntityData.defineId(GusEntity.class, EntityDataSerializers.BOOLEAN);
 
     private final ServerBossEvent bossEvent =
             new ServerBossEvent(this.getDisplayName(), BossEvent.BossBarColor.RED, BossEvent.BossBarOverlay.PROGRESS);
 
-    /** Server only (saved): the transition has been triggered. Guarantees it can only happen once. */
+    /** Server only (saved): phase 2 has been triggered. Guarantees it can only happen once. */
     private boolean phase2Triggered;
-    /** Server only (saved): 0 = not transitioning, otherwise ticks since the transition began. */
-    private int transitionTick;
-    /** Server only: health restored per tick during the heal window (computed when the window opens). */
-    private float healStep;
 
     /** Client only: tickCount at which the current animation started. */
     private int punchAnimStartTick = -1000;
     private int leapStateStartTick = -1000;
-    private int transitionStartTick = -1000;
     /** tickCount at which the current ACTION_* began (set on both sides). */
     private int actionStartTick = -1000;
 
@@ -158,7 +143,6 @@ public class GusEntity extends Monster {
         this.entityData.define(DATA_LEAP_STATE, LEAP_NONE);
         this.entityData.define(DATA_ACTION, ACTION_NONE);
         this.entityData.define(DATA_PHASE, 1);
-        this.entityData.define(DATA_TRANSITIONING, false);
     }
 
     @Override
@@ -169,8 +153,6 @@ public class GusEntity extends Monster {
                 this.punchAnimStartTick = this.tickCount;
             } else if (DATA_LEAP_STATE.equals(key)) {
                 this.leapStateStartTick = this.tickCount;
-            } else if (DATA_TRANSITIONING.equals(key) && this.isTransitioning()) {
-                this.transitionStartTick = this.tickCount;
             } else if (DATA_ACTION.equals(key)) {
                 this.actionStartTick = this.tickCount;
             }
@@ -185,15 +167,6 @@ public class GusEntity extends Monster {
 
     public boolean isPhase2() {
         return this.getPhase() >= 2;
-    }
-
-    public boolean isTransitioning() {
-        return this.entityData.get(DATA_TRANSITIONING);
-    }
-
-    /** Client: ticks since the phase 2 transition began. */
-    public float getTransitionTicks(float ageInTicks) {
-        return ageInTicks - (float) this.transitionStartTick;
     }
 
     /** Phase 2 attacks come faster. */
@@ -401,20 +374,11 @@ public class GusEntity extends Monster {
         }
     }
 
-    // ---- phase 2 transition -------------------------------------------------------------------
-
-    /** Invulnerable while transitioning (commands like /kill still work). */
-    @Override
-    public boolean isInvulnerableTo(DamageSource source) {
-        if (this.isTransitioning() && !source.is(DamageTypeTags.BYPASSES_INVULNERABILITY)) {
-            return true;
-        }
-        return super.isInvulnerableTo(source);
-    }
+    // ---- phase 2: instant switch --------------------------------------------------------------
 
     /**
-     * Phase 1 is never fatal: the hit that would bring Gus to 30% health or below starts the transition instead
-     * (health is kept above zero so a single big hit cannot skip phase 2).
+     * Phase 1 is never fatal: when damage takes Gus to 30% health or below, phase 2 starts on the spot.
+     * A lethal hit is rescued the same way (the full heal happens before death is processed).
      */
     @Override
     protected void actuallyHurt(DamageSource source, float amount) {
@@ -424,71 +388,32 @@ public class GusEntity extends Monster {
         }
     }
 
-    /**
-     * Starts the transition (once) when health is at or below the trigger line, and rescues a lethal hit.
-     * Called right after damage AND every tick, so changing health by any means (commands included) triggers it too.
-     */
+    /** Starts phase 2 (once) when health is at or below the trigger line. Also checked every tick. */
     private void checkPhase2Trigger() {
         if (this.level().isClientSide || this.phase2Triggered) {
             return;
         }
         if (this.getHealth() <= this.getMaxHealth() * GusStats.PHASE2_TRIGGER_RATIO) {
-            if (this.getHealth() <= 0.0F) {
-                this.setHealth(1.0F);
-            }
-            this.phase2Triggered = true;
-            this.transitionTick = 1;
-            this.entityData.set(DATA_TRANSITIONING, true);
-            LOGGER.info("[Gus] phase 2 transition started (health {} / {})", this.getHealth(), this.getMaxHealth());
+            this.startPhase2();
         }
     }
 
-    /** Server: runs every tick while transitioning. */
-    private void tickTransition() {
-        if (this.transitionTick <= 0) {
-            return;
-        }
+    /** Server: the instant switch - phase flag (swaps the texture), buffs, full heal, piglins, a burst of feedback. */
+    private void startPhase2() {
+        this.phase2Triggered = true;
         ServerLevel level = (ServerLevel) this.level();
-        this.getNavigation().stop();
-        Vec3 motion = this.getDeltaMovement();
-        this.setDeltaMovement(0.0D, motion.y, 0.0D);
+        LOGGER.info("[Gus] phase 2 started (health {} / {})", this.getHealth(), this.getMaxHealth());
 
-        int n = this.transitionTick;
-        if (n == 1) {
-            level.playSound(null, this.getX(), this.getY(), this.getZ(),
-                    SoundEvents.ENDER_DRAGON_GROWL, SoundSource.HOSTILE, 3.0F, 0.6F);
-        }
-        if (n == T_ROAR) {
-            level.playSound(null, this.getX(), this.getY(), this.getZ(),
-                    SoundEvents.RAVAGER_ROAR, SoundSource.HOSTILE, 3.0F, 0.6F);
-            level.sendParticles(ParticleTypes.LARGE_SMOKE, this.getX(), this.getY() + 2.0D, this.getZ(),
-                    40, 1.2D, 1.0D, 1.2D, 0.02D);
-        }
-        if (n == T_SWITCH) {
-            this.entityData.set(DATA_PHASE, 2);
-            this.applyPhase2Buffs();
-            this.spawnPiglins(level);
-            LOGGER.info("[Gus] phase 2 active, piglins summoned");
-            level.sendParticles(ParticleTypes.ANGRY_VILLAGER, this.getX(), this.getY() + 2.8D, this.getZ(),
-                    12, 0.8D, 0.5D, 0.8D, 0.0D);
-        }
-        if (n >= T_HEAL_START && n < T_HEAL_END) {
-            if (n == T_HEAL_START || this.healStep <= 0.0F) {
-                this.healStep = (this.getMaxHealth() - this.getHealth()) / (float) (T_HEAL_END - n);
-            }
-            this.heal(this.healStep);
-        }
-        if (n == T_IMPACT) {
-            this.spawnImpactEffects(level, this.position(), 8.0D);
-        }
+        this.entityData.set(DATA_PHASE, 2);
+        this.applyPhase2Buffs();
+        this.setHealth(this.getMaxHealth());
+        this.spawnPiglins(level);
 
-        if (n >= GusStats.TRANSITION_TICKS) {
-            this.setHealth(this.getMaxHealth());
-            this.transitionTick = 0;
-            this.entityData.set(DATA_TRANSITIONING, false);
-        } else {
-            this.transitionTick++;
-        }
+        level.playSound(null, this.getX(), this.getY(), this.getZ(),
+                SoundEvents.RAVAGER_ROAR, SoundSource.HOSTILE, 3.0F, 0.6F);
+        this.spawnImpactEffects(level, this.position(), 8.0D);
+        level.sendParticles(ParticleTypes.ANGRY_VILLAGER, this.getX(), this.getY() + 2.8D, this.getZ(),
+                12, 0.8D, 0.5D, 0.8D, 0.0D);
     }
 
     /** +50% speed and +10% damage. Safe to call repeatedly (e.g. after loading a save). */
@@ -554,8 +479,7 @@ public class GusEntity extends Monster {
     protected void customServerAiStep() {
         super.customServerAiStep();
         this.checkPhase2Trigger();
-        this.tickTransition();
-        if (this.getTarget() != null && !this.isTransitioning()
+        if (this.getTarget() != null
                 && this.tickCount % 20 == 0 && this.getHealth() < this.getMaxHealth()) {
             this.heal(GusStats.COMBAT_REGEN_PER_SECOND);
         }
@@ -585,7 +509,6 @@ public class GusEntity extends Monster {
         super.addAdditionalSaveData(tag);
         tag.putInt("GusPhase", this.getPhase());
         tag.putBoolean("GusPhase2Triggered", this.phase2Triggered);
-        tag.putInt("GusTransitionTick", this.transitionTick);
     }
 
     @Override
@@ -595,9 +518,7 @@ public class GusEntity extends Monster {
             this.bossEvent.setName(this.getDisplayName());
         }
         this.phase2Triggered = tag.getBoolean("GusPhase2Triggered");
-        this.transitionTick = tag.getInt("GusTransitionTick");
         this.entityData.set(DATA_PHASE, Math.max(1, tag.getInt("GusPhase")));
-        this.entityData.set(DATA_TRANSITIONING, this.transitionTick > 0);
         if (this.isPhase2()) {
             this.applyPhase2Buffs();
         }

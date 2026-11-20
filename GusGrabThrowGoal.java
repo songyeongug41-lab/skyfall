@@ -38,7 +38,7 @@ public class GusGrabThrowGoal extends Goal {
 
     @Override
     public boolean canUse() {
-        if (!this.gus.isPhase2() || this.gus.isTransitioning() || this.gus.tickCount < this.nextUseTick
+        if (!this.gus.isPhase2() || this.gus.tickCount < this.nextUseTick
                 || !this.gus.onGround() || !this.gus.getPassengers().isEmpty()) {
             return false;
         }
@@ -60,7 +60,7 @@ public class GusGrabThrowGoal extends Goal {
 
     @Override
     public boolean canContinueToUse() {
-        return this.phase != Phase.DONE && !this.gus.isTransitioning();
+        return this.phase != Phase.DONE;
     }
 
     @Override

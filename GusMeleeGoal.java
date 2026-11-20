@@ -24,13 +24,13 @@ public class GusMeleeGoal extends Goal {
     @Override
     public boolean canUse() {
         LivingEntity target = this.gus.getTarget();
-        return !this.gus.isTransitioning() && target != null && target.isAlive();
+        return target != null && target.isAlive();
     }
 
     @Override
     public boolean canContinueToUse() {
         LivingEntity target = this.gus.getTarget();
-        if (target == null || !target.isAlive() || this.gus.isTransitioning()) {
+        if (target == null || !target.isAlive()) {
             return false;
         }
         return !(target instanceof Player player) || (!player.isSpectator() && !player.isCreative());

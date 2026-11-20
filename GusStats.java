@@ -28,7 +28,6 @@ public final class GusStats {
 
     // ---- phase 2 ----
     public static final float PHASE2_TRIGGER_RATIO = 0.30F;   // phase 2 starts (once) when health drops to this fraction of max or below
-    public static final int TRANSITION_TICKS = 80;            // length of the invulnerable transition (4 seconds)
     public static final int PIGLIN_COUNT = 10;
     public static final double PHASE2_DAMAGE_BONUS = 0.10D;   // +10% damage
     public static final double PHASE2_SPEED_BONUS = 0.50D;    // +50% movement speed

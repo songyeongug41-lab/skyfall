@@ -40,12 +40,6 @@ public class GusModel<T extends GusEntity> extends HierarchicalModel<T> {
     // two-fisted slam
     private static final float[] SLAM_ARM  = {0.0F, -2.4F, -0.4F, -0.4F, 0.0F};
     private static final float[] SLAM_LEAN = {0.0F, -0.22F, 0.45F, 0.45F, 0.0F};
-    // phase 2 transition: crouch and shake -> rear up and roar -> slam -> back to stance
-    private static final float[] TR_TIMES = {0.00F, 0.25F, 0.45F, 0.65F, 0.75F, 1.00F};
-    private static final float[] TR_LEAN  = {0.12F, 0.75F, -0.35F, -0.35F, 0.50F, 0.12F};
-    private static final float[] TR_ARM   = {-0.45F, 0.20F, -2.90F, -2.90F, -0.50F, -0.45F};
-    private static final float[] TR_HEAD  = {0.00F, 0.50F, -0.60F, -0.60F, 0.20F, 0.00F};
-    private static final float[] TR_DROP  = {0.00F, 2.50F, 0.00F, 0.00F, 2.00F, 0.00F};
 
     private final ModelPart root;
     private final ModelPart torso;
@@ -140,20 +134,7 @@ public class GusModel<T extends GusEntity> extends HierarchicalModel<T> {
         float headExtra = 0.0F;                                         // extra head pitch
 
         int leap = entity.getLeapState();
-        if (entity.isTransitioning()) {
-            // ---- phase 2 transition ----
-            float tp = Mth.clamp(entity.getTransitionTicks(ageInTicks) / (float) GusStats.TRANSITION_TICKS, 0.0F, 1.0F);
-            run = 0.0F;
-            bobAmount = 0.0F;
-            lean = sample(tp, TR_TIMES, TR_LEAN);
-            rightArmX = sample(tp, TR_TIMES, TR_ARM);
-            leftArmX = rightArmX;
-            headExtra = sample(tp, TR_TIMES, TR_HEAD);
-            crouchDrop = sample(tp, TR_TIMES, TR_DROP);
-            flare = 0.3F;
-            legTuck = -0.15F * crouchDrop;
-            shake = Mth.sin(ageInTicks * 3.1F) * 0.05F * (1.0F - smooth((tp - 0.45F) / 0.3F));
-        } else if (leap != GusEntity.LEAP_NONE) {
+        if (leap != GusEntity.LEAP_NONE) {
             // ---- attack 2: leap + slam (no walk cycle while this plays) ----
             float t = entity.getLeapStateTicks(ageInTicks);
             run = 0.0F;
