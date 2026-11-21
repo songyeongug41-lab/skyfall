@@ -1,6 +1,5 @@
 package com.example.gusboss.entity.ai;
 
-import com.example.gusboss.GusStats;
 import com.example.gusboss.entity.GusEntity;
 import java.util.EnumSet;
 import net.minecraft.world.entity.LivingEntity;
@@ -89,8 +88,8 @@ public class GusMeleeGoal extends Goal {
         }
 
         if (this.attackCooldown <= 0 && distSqr <= reachSqr && this.gus.getSensing().hasLineOfSight(target)) {
-            this.attackCooldown = GusStats.PUNCH_INTERVAL_TICKS;
-            this.hitDelay = GusStats.PUNCH_HIT_DELAY_TICKS;
+            this.attackCooldown = this.gus.getPunchIntervalTicks();
+            this.hitDelay = this.gus.getPunchHitDelayTicks();
             this.gus.startPunch();
         }
     }

@@ -131,6 +131,7 @@ public class GusModel<T extends GusEntity> extends HierarchicalModel<T> {
         float legTuck = 0.0F;                                           // added to both legs
         float crouchDrop = 0.0F;                                        // whole body sinks (model units)
         float shake = 0.0F;
+        float headExtra = 0.0F;                                         // extra head pitch
 
         int leap = entity.getLeapState();
         if (leap != GusEntity.LEAP_NONE) {
@@ -166,6 +167,57 @@ public class GusModel<T extends GusEntity> extends HierarchicalModel<T> {
                 flare = 0.25F;
                 legTuck = -0.3F * (1.0F - r);
             }
+        } else if (entity.getAction() != GusEntity.ACTION_NONE) {
+            // ---- phase 2 attacks: grab/throw and roar ----
+            int action = entity.getAction();
+            float t = entity.getActionTicks(ageInTicks);
+            run = 0.0F;
+            bobAmount = 0.0F;
+            if (action == GusEntity.ACTION_GRAB_REACH) {
+                float c = smooth(t / 6.0F);
+                rightArmX = Mth.lerp(c, armBase, -1.45F);               // both arms out to grab
+                leftArmX = rightArmX;
+                lean = 0.12F + 0.3F * c;
+                flare = Mth.lerp(c, 0.22F, -0.12F);                     // closing in on the target
+            } else if (action == GusEntity.ACTION_GRAB_HOLD) {
+                float c = smooth(t / 12.0F);
+                rightArmX = Mth.lerp(c, -1.45F, -2.8F);                 // lifting the victim overhead
+                leftArmX = rightArmX;
+                lean = Mth.lerp(c, 0.42F, -0.15F);
+                flare = Mth.lerp(c, -0.12F, 0.05F);
+                headExtra = -0.3F * c;
+                shake = Mth.sin(ageInTicks * 2.8F) * 0.025F * c;
+            } else if (action == GusEntity.ACTION_GRAB_THROW) {
+                float c = smooth(t / 4.0F);
+                rightArmX = Mth.lerp(c, -2.8F, -0.6F);                  // hurl forward and down
+                leftArmX = rightArmX;
+                lean = Mth.lerp(c, -0.15F, 0.6F);
+                flare = 0.05F + 0.15F * c;
+            } else if (action == GusEntity.ACTION_RECOVER) {
+                float r = smooth(t / 16.0F);
+                rightArmX = Mth.lerp(r, -0.6F, armBase);
+                leftArmX = rightArmX;
+                lean = Mth.lerp(r, 0.6F, 0.12F * stance);
+                flare = 0.2F;
+            } else if (action == GusEntity.ACTION_ROAR_WINDUP) {
+                float c = smooth(t / (float) GusStats.ROAR_WINDUP_TICKS);
+                lean = 0.12F + 0.4F * c;
+                rightArmX = Mth.lerp(c, armBase, 0.9F);                 // arms back, head down, coiling
+                leftArmX = rightArmX;
+                headExtra = 0.5F * c;
+                crouchDrop = 2.0F * c;
+                flare = 0.22F + 0.1F * c;
+                legTuck = -0.3F * c;
+            } else {
+                float c = smooth(t / 6.0F);                             // the roar: chest out, head up, arms wide
+                lean = Mth.lerp(c, 0.52F, -0.3F);
+                rightArmX = Mth.lerp(c, 0.9F, -0.6F);
+                leftArmX = rightArmX;
+                flare = Mth.lerp(c, 0.32F, 0.9F);
+                headExtra = Mth.lerp(c, 0.5F, -0.7F);
+                crouchDrop = 2.0F * (1.0F - c);
+                shake = Mth.sin(ageInTicks * 3.3F) * 0.04F;
+            }
         } else {
             // ---- attack 1: punch combo overlay ----
             float p = entity.getPunchProgress(ageInTicks);
@@ -199,7 +251,7 @@ public class GusModel<T extends GusEntity> extends HierarchicalModel<T> {
         this.torso.zRot = shake;
 
         // the head keeps looking at the target while the torso leans and twists
-        this.head.xRot = headPitch * RAD - 0.7F * lean;
+        this.head.xRot = headPitch * RAD - 0.7F * lean + headExtra;
         this.head.yRot = netHeadYaw * RAD - twist;
 
         this.rightArm.xRot = rightArmX;

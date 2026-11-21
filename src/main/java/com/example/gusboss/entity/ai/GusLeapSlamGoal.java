@@ -75,7 +75,7 @@ public class GusLeapSlamGoal extends Goal {
     public void stop() {
         this.phase = Phase.DONE;
         this.gus.setLeapState(GusEntity.LEAP_NONE);
-        this.nextUseTick = this.gus.tickCount + GusStats.LEAP_COOLDOWN_TICKS;
+        this.nextUseTick = this.gus.tickCount + this.gus.getLeapCooldownTicks();
     }
 
     @Override
