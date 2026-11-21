@@ -112,13 +112,13 @@ public class GusGrabThrowGoal extends Goal {
                         && this.gus.distanceTo(player) <= GusStats.GRAB_RANGE + 1.0D) {
                     this.grab(player);
                 } else {
-                    this.toRecover();   // whiffed
+                    this.toRecover(true);   // whiffed
                 }
             }
         } else if (this.phase == Phase.HOLD) {
             if (this.held == null || !this.held.isAlive() || this.held.isRemoved()) {
                 this.held = null;
-                this.toRecover();
+                this.toRecover(false);
             } else {
                 if (this.held.getVehicle() != this.gus) {
                     this.held.startRiding(this.gus, true);   // sneaking off is not an option
@@ -134,7 +134,7 @@ public class GusGrabThrowGoal extends Goal {
                 this.release();
             }
             if (this.phaseTicks >= GusStats.GRAB_THROW_TICKS) {
-                this.toRecover();
+                this.toRecover(false);
             }
         } else if (this.phase == Phase.RECOVER) {
             boolean flightDone = this.thrown == null;
@@ -144,10 +144,10 @@ public class GusGrabThrowGoal extends Goal {
         }
     }
 
-    private void toRecover() {
+    private void toRecover(boolean whiff) {
         this.phase = Phase.RECOVER;
         this.phaseTicks = 0;
-        this.gus.setAction(GusEntity.ACTION_RECOVER);
+        this.gus.setAction(whiff ? GusEntity.ACTION_WHIFF_RECOVER : GusEntity.ACTION_RECOVER);
     }
 
     private void grab(LivingEntity victim) {

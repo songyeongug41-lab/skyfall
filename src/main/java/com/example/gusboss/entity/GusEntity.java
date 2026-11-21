@@ -62,19 +62,21 @@ import org.slf4j.Logger;
 public class GusEntity extends Monster {
     private static final Logger LOGGER = LogUtils.getLogger();
 
-    public static final int LEAP_NONE = 0;
-    public static final int LEAP_WINDUP = 1;
-    public static final int LEAP_AIR = 2;
-    public static final int LEAP_SLAM = 3;
+    public static final int LEAP_NONE = GusStates.LEAP_NONE;
+    public static final int LEAP_WINDUP = GusStates.LEAP_WINDUP;
+    public static final int LEAP_AIR = GusStates.LEAP_AIR;
+    public static final int LEAP_SLAM = GusStates.LEAP_SLAM;
 
     // phase 2 attack animations (DATA_ACTION)
-    public static final int ACTION_NONE = 0;
-    public static final int ACTION_GRAB_REACH = 1;
-    public static final int ACTION_GRAB_HOLD = 2;
-    public static final int ACTION_GRAB_THROW = 3;
-    public static final int ACTION_RECOVER = 4;
-    public static final int ACTION_ROAR_WINDUP = 5;
-    public static final int ACTION_ROAR = 6;
+    public static final int ACTION_NONE = GusStates.ACTION_NONE;
+    public static final int ACTION_GRAB_REACH = GusStates.ACTION_GRAB_REACH;
+    public static final int ACTION_GRAB_HOLD = GusStates.ACTION_GRAB_HOLD;
+    public static final int ACTION_GRAB_THROW = GusStates.ACTION_GRAB_THROW;
+    public static final int ACTION_RECOVER = GusStates.ACTION_RECOVER;
+    public static final int ACTION_ROAR_WINDUP = GusStates.ACTION_ROAR_WINDUP;
+    public static final int ACTION_ROAR = GusStates.ACTION_ROAR;
+    public static final int ACTION_ROAR_RECOVER = GusStates.ACTION_ROAR_RECOVER;
+    public static final int ACTION_WHIFF_RECOVER = GusStates.ACTION_WHIFF_RECOVER;
 
     private static final UUID PHASE2_SPEED_ID = UUID.fromString("7b2a5c1e-3f0d-4a5b-9d0e-5c1f2a7b9e41");
     private static final UUID PHASE2_DAMAGE_ID = UUID.fromString("c3d94a16-8e72-4b5f-a1c0-2d7e6f08b3a9");

@@ -15,7 +15,7 @@ import org.slf4j.Logger;
 @Mod(GusBossMod.MOD_ID)
 public class GusBossMod {
     public static final String MOD_ID = "gusboss";
-    public static final String VERSION = "0.3.0";
+    public static final String VERSION = "0.4.0";
     private static final Logger LOGGER = LogUtils.getLogger();
 
     public GusBossMod() {

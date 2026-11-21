@@ -13,7 +13,7 @@ public final class GusStats {
 
     public static final int PUNCH_INTERVAL_TICKS = 10;        // 20 ticks = 1 second
     public static final int PUNCH_ANIM_TICKS = 10;            // length of one punch animation
-    public static final int PUNCH_HIT_DELAY_TICKS = 4;        // damage lands when the fist is fully extended
+    public static final int PUNCH_HIT_DELAY_TICKS = 5;        // damage lands when the fist is fully extended (half of the animation)
 
     // ---- attack 2: leap + ground slam ----
     public static final double LEAP_MIN_DIST = 6.0D;          // only leaps when the target is at least this far

@@ -95,7 +95,7 @@ public class GusRoarGoal extends Goal {
             if (this.phaseTicks >= GusStats.ROAR_TICKS) {
                 this.phase = Phase.RECOVER;
                 this.phaseTicks = 0;
-                this.gus.setAction(GusEntity.ACTION_RECOVER);
+                this.gus.setAction(GusEntity.ACTION_ROAR_RECOVER);
             }
         } else if (this.phase == Phase.RECOVER) {
             if (this.phaseTicks >= 12) {
